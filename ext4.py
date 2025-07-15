@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+"""Readonly access to ext4 files."""
+
 from dataclasses import dataclass
 
 SUPERBLOCK_OFFSET = 1024
@@ -79,31 +81,35 @@ MODE_REGULAR_FILE     = 0x8000
 MODE_SYMBOLIC_LINK    = 0xA000
 MODE_UNIX_SOCKET      = 0xC000
 
-def is_dir(mode):
-    return (mode & MODE_TYPE_MASK) == MODE_DIRECTORY
-
 class Reader:
+    """Read access to byte buffer."""
+
     def __init__(self, data):
         self.data = data
 
     def u32(self, offset):
+        """Read u32 value at a given offset."""
         value = 0
         for i in range(0,4):
             value <<= 8
             value += self.data[offset + 3 - i]
         return value
-    
+
     def u16(self, offset):
+        """Read u16 value at a given offset."""
         high = self.data[offset + 1]
         low  = self.data[offset + 0]
         value = (high << 8) + low
         return value
-    
+
     def bytes(self, offset, count):
+        """Read a number of bytes at a given offset."""
         return self.data[offset: offset + count]
 
-
+@dataclass
+# pylint: disable=too-many-instance-attributes
 class Superblock:
+    """Ext2/3/4 superblock."""
     def __init__(self, file):
         file.seek(SUPERBLOCK_OFFSET)
         data = file.read(SUPERBLOCK_SIZE)
@@ -111,7 +117,7 @@ class Superblock:
 
         signature = reader.u16(SB_OFFSET_EXT2_SIGNATURE)
         if signature != SB_EXT2_SIGNATURE:
-            raise Exception('invalid signature')
+            raise RuntimeError('invalid signature')
 
         self.total_blocks = reader.u32(SB_OFFSET_TOTAL_BLOCKS_LO)
         self.total_inodes = reader.u32(SB_OFFSET_TOTAL_INDOES)
@@ -134,7 +140,7 @@ class Superblock:
 
         ld_block_size = reader.u32(SB_OFFSET_BLOCK_SIZE)
         if ld_block_size > 6:
-            raise Exception('block size above 64KByte is not supported')
+            raise RuntimeError('block size above 64KByte is not supported')
         self.block_size = 1 << (10 + ld_block_size)
 
         if self.revision >= 1:
@@ -146,14 +152,17 @@ class Superblock:
             self.feature_incompat = reader.u32(SB_OFFSET_FEATURE_INCOMPAT)
             self.feature_ro_compat = reader.u32(SB_OFFSET_FEATURE_RO_COMPAT)
             self.uuid = reader.bytes(SB_OFFSET_UUID, SB_UUID_SIZE)
-            self.volume_name = reader.bytes(SB_OFFSET_VOLUME_NAME, SB_VOLUME_NAME_SIZE).decode('utf-8')
+            self.volume_name = reader.bytes(SB_OFFSET_VOLUME_NAME,
+                SB_VOLUME_NAME_SIZE).decode('utf-8')
 
             if (self.feature_incompat & SB_FEATURE_64BIT) != 0:
                 self.bg_descriptor_size = reader.u16(SB_OFFSET_BG_DESCR_SIZE)
 
         self.gd_offset = (self.first_data_block + 1) * self.block_size
 
+@dataclass
 class BlockGroup:
+    """Ext2/3/4 block group."""
     def __init__(self, file, offset, size):
         file.seek(offset)
         data = file.read(size)
@@ -164,6 +173,7 @@ class BlockGroup:
         self.inode_table  = reader.u32(BG_OFFSET_INODE_TABLE)
 
 class INode:
+    """Index node."""
     def __init__(self, file, offset, size):
         file.seek(offset)
         data = file.read(size)
@@ -176,23 +186,34 @@ class INode:
         self.flags = reader.u32(INO_OFFSET_FLAGS)
         self.block = reader.bytes(INO_OFFSET_BLOCK, INO_BLOCK_SIZE)
 
+    def is_dir(self):
+        """Returns True, if inode is a directory."""
+        return (self.mode & MODE_TYPE_MASK) == MODE_DIRECTORY
+
+    def is_reg(self):
+        """Returns True, if inode is a regular file."""
+        return (self.mode & MODE_TYPE_MASK) == MODE_REGULAR_FILE
+
 @dataclass
 class DirEntry:
+    """Directory entry."""
     inode_id : int
     type: int
     name : str
 
 class FileSystem:
+    """Ext2/3/4 filesystem."""
     def __init__(self, file):
         self.file = file
         self.superblock = Superblock(file)
-    
+
     def lookup(self, inode_id):
+        """Returns the inode of the given inode id."""
         if (inode_id == 0) or (inode_id > self.superblock.total_inodes):
-            raise Exception('invalid inode id')
-    
+            raise ValueError('invalid inode id')
+
         blockgroup_id = int( (inode_id - 1) / self.superblock.inodes_per_group )
-        blockgroup = self.get_blockgroup(blockgroup_id)
+        blockgroup = self.__blockgroup(blockgroup_id)
 
         inode_table_offset = blockgroup.inode_table * self.superblock.block_size
         inode_index = (inode_id - 1) % self.superblock.inodes_per_group
@@ -202,71 +223,119 @@ class FileSystem:
         return inode
 
 
-    def get_blockgroup(self, blockgroup_id) -> BlockGroup:
-        count = int( (self.superblock.total_blocks + self.superblock.blocks_per_group - 1) / self.superblock.blocks_per_group )
+    def __blockgroup(self, blockgroup_id) -> BlockGroup:
+        count = int( (self.superblock.total_blocks +
+            self.superblock.blocks_per_group - 1) / self.superblock.blocks_per_group )
         if blockgroup_id > count:
-            raise Exception('invalid blockgroup id')
-        
+            raise ValueError('invalid blockgroup id')
+
         offset = self.superblock.gd_offset + ( blockgroup_id * self.superblock.bg_descriptor_size)
 
         blockgroup = BlockGroup(self.file, offset, self.superblock.bg_descriptor_size)
         return blockgroup
-    
-    def get_block(self, block_id):
+
+    def __block(self, block_id):
         offset = block_id * self.superblock.block_size
         self.file.seek(offset)
         return self.file.read(self.superblock.block_size)
 
     def blocks(self, inode: INode):
+        """Iterator over all blocks of an inode."""
         if (inode.flags & INO_FLAG_INLINE_DATA) != 0:
             yield inode.block
         elif (inode.flags & INO_FLAG_EXTENDS) != 0:
-            pass
+            raise NotImplementedError('extends not supported yet')
         else:
             reader = Reader(inode.block)
             for i in range(0, INO_DIRECT_BLOCKPOINTERS_SIZE):
                 block_id = reader.u32(INO_OFFSET_DIRECT_BLOCKPOINTERS + (i * 4))
                 if block_id != 0:
-                    block = self.get_block(block_id)
+                    block = self.__block(block_id)
                     yield block
-            # ToDo: iterate singly indirect block pointers
-            # ToDo: iterate doubly indirect block pointers
-            # ToDo: iterate triply indirect block pointers
+
+            # iterate singly indirect block pointers
+            block_id = reader.u32(INO_OFFSET_SINGLY_INDIRECT_BLOCKPOINTERS)
+            for block in self.__indirect_blocks(block_id):
+                yield block
+
+            # iterate doubly indirect block pointers
+            block_id = reader.u32(INO_OFFSET_SINGLY_INDIRECT_BLOCKPOINTERS)
+            for block in self.__doubly_indirect_blocks(block_id):
+                yield block
+
+            # iterate triply indirect block pointers
+            block_id = reader.u32(INO_OFFSET_SINGLY_INDIRECT_BLOCKPOINTERS)
+            for block in self.__triply_indirect_blocks(block_id):
+                yield block
+
+    def __indirect_blocks(self, blockpointers_id):
+        if blockpointers_id != 0:
+            blockpointers = self.__block(blockpointers_id)
+            reader = Reader(blockpointers)
+            for i in range(0, int( len(blockpointers) / 4)):
+                block_id = reader.u32(i * 4)
+                block = self.__block(block_id)
+                yield block
+
+    def __doubly_indirect_blocks(self, blockpointers_id):
+        if blockpointers_id != 0:
+            blockpointers = self.__block(blockpointers_id)
+            reader = Reader(blockpointers)
+            for i in range(0, int( len(blockpointers) / 4)):
+                block_id = reader.u32(i * 4)
+                for block in self.__indirect_blocks(block_id):
+                    yield block
+
+    def __triply_indirect_blocks(self, blockpointers_id):
+        if blockpointers_id != 0:
+            blockpointers = self.__block(blockpointers_id)
+            reader = Reader(blockpointers)
+            for i in range(0, int( len(blockpointers) / 4)):
+                block_id = reader.u32(i * 4)
+                for block in self.__doubly_indirect_blocks(block_id):
+                    yield block
 
     def files(self, inode_id):
+        """Iterator over all entries of the directory specified by the given inode."""
         inode = self.lookup(inode_id)
 
-        if not is_dir(inode.mode):
-            raise Exception("Directory expected")
-        
+        if not inode.is_dir():
+            raise ValueError("Directory expected")
+
+        print('block')
         for block in self.blocks(inode):
             reader = Reader(block)
             offset = 0
 
+            print(f'{len(block)}')
             while offset < len(block):
+                print('block')
                 inode_id = reader.u32(offset)
                 record_size = reader.u16(offset + 4)
 
-                if inode_id != 0:                    
-                    name_length = block[offset + 6]                    
-                    type = block[offset + 7]
+                if inode_id != 0:
+                    name_length = block[offset + 6]
+                    filetype = block[offset + 7]
                     name = reader.bytes(offset + 8, name_length).decode('utf-8')
-                    entry = DirEntry(inode_id, type, name)
+                    entry = DirEntry(inode_id, filetype, name)
                     yield entry
-                
+
                 offset += record_size
 
     def find(self, path):
+        """Returns the inode id of the given path."""
         if path.startswith('/'):
             path = path[1:]
-        id = 2
+        inode_id = 2
         for elem in path.split('/'):
+            if elem == '':
+                continue
             found = False
             for file in self.files(id):
                 if file.name == elem:
-                    id = file.inode_id
+                    inode_id = file.inode_id
                     found = True
                     break
             if not found:
                 return None
-        return id
+        return inode_id
