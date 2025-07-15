@@ -9,7 +9,6 @@ def list_files(fs, basename, inode_id):
             continue
         if entry.type == 1:
             inode = fs.lookup(entry.inode_id)
-            print(f'{basename}{entry.name} {inode.size}')            
         elif entry.type == 2:
             list_files(fs, f'{basename}{entry.name}/', entry.inode_id)
 
