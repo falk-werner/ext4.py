@@ -3,23 +3,29 @@
 import argparse
 import ext4
 
-def list_files(fs, basename, inode_id):
+def is_match(name, candidates):
+    if len(candidates) == 0:
+        return True
+    for candidate in candidates:
+        if candidate in name:
+            return True
+    return False
+
+def list_files(fs, basename, inode_id, paths):
     for entry in fs.files(inode_id):
         if entry.name in ['.', '..']:
             continue
-        if entry.type == 1:
-            inode = fs.lookup(entry.inode_id)
-        elif entry.type == 2:
-            list_files(fs, f'{basename}{entry.name}/', entry.inode_id)
+        full_name = f'{basename}{entry.name}'
+        if is_match(full_name, paths):
+            print(f'{full_name}')
+        if entry.type == ext4.DIRENT_DIR:
+            list_files(fs, f'{basename}{entry.name}/', entry.inode_id, paths)
 
 
-def do_list(filename, args):
+def do_list(filename, paths):
     with open(filename, 'rb') as f:
         fs = ext4.FileSystem(f)
-        list_files(fs, '/', 2)
-
-        id = fs.find('/foo/bar/bar.txt')
-        print(id)
+        list_files(fs, '/', ext4.ROOT, paths)
 
 
 def main():
