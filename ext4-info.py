@@ -7,7 +7,7 @@ import ext4
 def print_info(filename):
     with open(filename, 'rb') as f:
         fs = ext4.FileSystem(f)
-        sb = fs.superblock
+        sb = fs.info()
 
         print('[ superblock.basic ]')
         print(f'total blocks: {sb.total_blocks}')
