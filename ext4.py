@@ -199,6 +199,22 @@ class INode:
         """Returns True, if inode is a regular file."""
         return (self.mode & MODE_TYPE_MASK) == MODE_REGULAR_FILE
 
+    def is_symlink(self):
+        return (self.mode & MODE_TYPE_MASK) == MODE_SYMBOLIC_LINK
+
+    def is_socket(self):
+        return (self.mode & MODE_TYPE_MASK) == MODE_UNIX_SOCKET
+
+    def is_fifo(self):
+        return (self.mode & MODE_TYPE_MASK) == MODE_FIFO
+
+    def is_char(self):
+        return (self.mode & MODE_TYPE_MASK) == MODE_CHARACTER_DEVICE
+
+    def is_block(self):
+        return (self.mode & MODE_TYPE_MASK) == MODE_BLOCK_DEVICE
+
+
 @dataclass
 class DirEntry:
     """Directory entry."""

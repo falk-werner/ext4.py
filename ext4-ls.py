@@ -3,6 +3,25 @@
 import argparse
 import ext4
 
+def get_filetype(inode):
+    if inode.is_reg():
+        return 'r'
+    elif inode.is_dir():
+        return 'd'
+    elif inode.is_symlink():
+        return 'l'
+    elif inode.is_socket():
+        return 's'
+    elif inode.is_fifo():
+        return 'f'
+    elif inode.is_char():
+        return 'c'
+    elif inode.is_block():
+        return 'b'
+    else:
+        return '?'
+
+
 def do_list(filename, paths):
     with open(filename, 'rb') as f:
         fs = ext4.FileSystem(f)
@@ -14,9 +33,11 @@ def do_list(filename, paths):
                     print(f'{path}')
                     for entry in fs.files(id):
                         inode2 = fs.lookup(entry.inode_id)
-                        print(f'  {inode2.size:<10} {entry.name}')
+                        filetype = get_filetype(inode2)
+                        print(f'  {filetype} {inode2.size:<10} {entry.name}')
                 else:
-                    print(f'{inode.size:<10} {path}')
+                    filetype = get_filetype(inode)
+                    print(f'{filetype} {inode.size:<10} {path}')
                 print()
             else:
                 print(f'not found: {path}')
